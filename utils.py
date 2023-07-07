@@ -1,8 +1,8 @@
 import os
-from typing import Dict
+from typing import Union, Dict, List
 
 import cv2
-# from pprint import pprint
+from pprint import pprint
 from striprtf.striprtf import rtf_to_text
 
 
@@ -14,7 +14,6 @@ def sample(
     remove_video_after: bool,
 ) -> None:
     for folder_path in [f.path for f in os.scandir(path) if f.is_dir()]:
-
         if remove_image_before:
             for file in os.scandir(folder_path):
                 if file.path.endswith(".png"):
@@ -44,7 +43,7 @@ def sample(
                     os.remove(file.path)
 
 
-def annotate(annotation_path: str) -> Dict[str, Dict[str, int | [int]]]:
+def annotate(annotation_path: str) -> Dict[str, Dict[str, Union[int, List[int]]]]:
     json_output = {}
     for folder_path in [f.path for f in os.scandir(annotation_path) if f.is_dir()]:
         for annotation in os.scandir(folder_path):
@@ -53,6 +52,10 @@ def annotate(annotation_path: str) -> Dict[str, Dict[str, int | [int]]]:
                     text = rtf_to_text(content.read())
                     seconds, *classes = text.split(",")
                     classes = list(map(lambda c: c.lower(), classes))
+                    try:
+                        seconds = int(seconds)
+                    except ValueError:
+                        seconds = -1
                     json_output.update(
                         {
                             annotation.path: {
@@ -64,12 +67,5 @@ def annotate(annotation_path: str) -> Dict[str, Dict[str, int | [int]]]:
     return json_output
 
 
-# Driver code
-#
-# pprint(annotate(annotation_path="GT"))
-#
-# sample(path=os.path.join(os.getcwd(), "TRAINING_SET_DEV_1"),
-#        sampling_interval=5,
-#        adjust_sampling_interval=False,
-#        remove_image_before=True,
-#        remove_video_after=True)
+if __name__ == "__main__":
+    pprint(annotate(annotation_path="GT"))

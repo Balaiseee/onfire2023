@@ -21,21 +21,6 @@ import wandb
 from utils import sample
 
 
-# Start a new wandb run to track this script
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="approach1_fire_detection",
-    #
-    # # track hyperparameters and run metadata
-    # config={
-    #     "learning_rate": 0.02,
-    #     "architecture": "CNN",
-    #     "dataset": "CIFAR-100",
-    #     "epochs": 10,
-    # }
-)
-
-
 def imshow(input, title=None):
     input = input.numpy().transpose((1, 2, 0))
     mean = np.array([0.485, 0.456, 0.406])
@@ -162,101 +147,104 @@ def visualize_model(model, num_images=6):
         model.train(mode=was_training)
 
 
-cudnn.benchmark = True
-plt.ion()
-
-# Data augmentation and normalization for training
-# Just normalization for validation
-data_transforms = {
-    "train": transforms.Compose(
-        [
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ]
-    ),
-    "val": transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ]
-    ),
-}
-
-data_dir = "TRAINING_SET_DEV"
-
-# Sample videos
-for x in ["train", "val"]:
-    sample(
-        path=os.path.join(data_dir, x),
-        sampling_interval=5,
-        adjust_sampling_interval=False,
-        remove_image_before=False,
-        remove_video_after=False,
+if __name__ == "__main__":
+    # Start a new wandb run to track this script
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="approach1_fire_detection",
+        #
+        # # track hyperparameters and run metadata
+        # config={
+        #     "learning_rate": 0.02,
+        #     "architecture": "CNN",
+        #     "dataset": "CIFAR-100",
+        #     "epochs": 10,
+        # }
     )
 
-image_datasets = {x: datasets.ImageFolder(root=os.path.join(data_dir, x),
-                                          transform=data_transforms[x]) for x in ["train", "val"]}
-dataloaders = {
-    x: torch.utils.data.DataLoader(dataset=image_datasets[x],
-                                   batch_size=4,
-                                   shuffle=True,
-                                   num_workers=4)
-    for x in ["train", "val"]
-}
-dataset_sizes = {x: len(image_datasets[x]) for x in ["train", "val"]}
-class_names = image_datasets["train"].classes
+    cudnn.benchmark = True
+    plt.ion()
 
-# Use all GPU otherwise the CPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Data augmentation and normalization for training
+    # Just normalization for validation
+    data_transforms = {
+        "train": transforms.Compose(
+            [
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        ),
+        "val": transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        ),
+    }
 
-# Get a batch of training data
-inputs, classes = next(iter(dataloaders["train"]))
+    data_dir = "TRAINING_SET_DEV"
 
-# Make a grid from batch
-out = torchvision.utils.make_grid(inputs)
+    # Sample videos
+    for x in ["train", "val"]:
+        sample(
+            path=os.path.join(data_dir, x),
+            sampling_interval=5,
+            adjust_sampling_interval=False,
+            remove_image_before=False,
+            remove_video_after=False,
+        )
 
-# Visualize a few training images
-imshow(input=out, title=[class_names[x] for x in classes])
+    image_datasets = {
+        x: datasets.ImageFolder(root=os.path.join(data_dir, x), transform=data_transforms[x]) for x in ["train", "val"]
+    }
+    dataloaders = {
+        x: torch.utils.data.DataLoader(dataset=image_datasets[x], batch_size=4, shuffle=True, num_workers=4)
+        for x in ["train", "val"]
+    }
+    dataset_sizes = {x: len(image_datasets[x]) for x in ["train", "val"]}
+    class_names = image_datasets["train"].classes
 
-model_ft = models.resnet18(weights="IMAGENET1K_V1")
-num_ftrs = model_ft.fc.in_features
-# Here the size of each output sample is set to 2.
-# Alternatively, it can be generalized to ``nn.Linear(num_ftrs, len(class_names))``.
-model_ft.fc = nn.Linear(in_features=num_ftrs,
-                        out_features=2)
+    # Use all GPU otherwise the CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model_ft = model_ft.to(device)
+    # Get a batch of training data
+    inputs, classes = next(iter(dataloaders["train"]))
 
-criterion = nn.CrossEntropyLoss()
+    # Make a grid from batch
+    out = torchvision.utils.make_grid(inputs)
 
-# Observe that all parameters are being optimized
-optimizer_ft = optim.SGD(params=model_ft.parameters(),
-                         lr=0.01,
-                         momentum=0.9,
-                         weight_decay=2e-4)
+    # Visualize a few training images
+    imshow(input=out, title=[class_names[x] for x in classes])
 
-# Decay LR by a factor of 0.1 every 7 epochs
-exp_lr_scheduler = lr_scheduler.StepLR(optimizer=optimizer_ft,
-                                       step_size=7,
-                                       gamma=0.1)
+    model_ft = models.resnet18(weights="IMAGENET1K_V1")
+    num_ftrs = model_ft.fc.in_features
+    # Here the size of each output sample is set to 2.
+    # Alternatively, it can be generalized to ``nn.Linear(num_ftrs, len(class_names))``.
+    model_ft.fc = nn.Linear(in_features=num_ftrs, out_features=2)
 
-# y_loss = {'train': [], 'val': []}
-# y_err = {'train': [], 'val': []}
-# x_epoch = []
-# fig = plt.figure()
-# ax0 = fig.add_subplot(121, title="loss")
-# ax1 = fig.add_subplot(122, title="top1err")
+    model_ft = model_ft.to(device)
 
-model_ft = train_model(
-    model=model_ft,
-    criterion=criterion,
-    optimizer=optimizer_ft,
-    scheduler=exp_lr_scheduler,
-    num_epochs=10
-)
+    criterion = nn.CrossEntropyLoss()
 
-visualize_model(model=model_ft)
+    # Observe that all parameters are being optimized
+    optimizer_ft = optim.SGD(params=model_ft.parameters(), lr=0.01, momentum=0.9, weight_decay=2e-4)
+
+    # Decay LR by a factor of 0.1 every 7 epochs
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer=optimizer_ft, step_size=7, gamma=0.1)
+
+    # y_loss = {'train': [], 'val': []}
+    # y_err = {'train': [], 'val': []}
+    # x_epoch = []
+    # fig = plt.figure()
+    # ax0 = fig.add_subplot(121, title="loss")
+    # ax1 = fig.add_subplot(122, title="top1err")
+
+    model_ft = train_model(
+        model=model_ft, criterion=criterion, optimizer=optimizer_ft, scheduler=exp_lr_scheduler, num_epochs=10
+    )
+
+    visualize_model(model=model_ft)

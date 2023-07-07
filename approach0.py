@@ -28,23 +28,7 @@ def predicate(a, b):
     return a[1] - a[0] + b[1] - b[0]
 
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to("cuda")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-prompts = [
-    "a picture of an area with fire or smoke",
-    "a photo of an area with fire or smoke",
-    "a picture of an area without fire or smoke",
-    "a photo of an area without fire or smoke",
-]
-videos = []
-data_dir = "TRAINING_SET_DEV_1"
-
-for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
-
-    for file in os.scandir(folder_path):
-        if file.path.endswith(".png"):
-            os.remove(file.path)
-
+def process_videos(model, processor, prompts, folder_path):
     for movie_file in os.scandir(folder_path):
         if movie_file.path.endswith(".mp4"):
             vidcap = cv2.VideoCapture(movie_file.path)
@@ -80,11 +64,14 @@ for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
 
             images, results = collections.OrderedDict(sorted(images.items())), []
 
-            for k, g in groupby(enumerate(images.values()), key=lambda x: x[1]):
+            for k, g in groupby(iterable=enumerate(images.values()), key=lambda x: x[1]):
                 if k:
                     g = list(g)
                     results.append(
-                        [int(g[0][0]) * adjusted_sampling_interval, int(g[0][0] + len(g)) * adjusted_sampling_interval]
+                        [
+                            int(g[0][0]) * adjusted_sampling_interval,
+                            int(g[0][0] + len(g)) * adjusted_sampling_interval,
+                        ]
                     )
 
             detection_time = reduce(predicate, [*results, 0])
@@ -94,4 +81,55 @@ for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
             for file in os.scandir(folder_path):
                 if file.path.endswith(".png"):
                     os.remove(file.path)
-print(videos)
+
+    return videos
+
+
+if __name__ == "__main__":
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to("cuda")
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    prompts = [
+        "a picture of an area with fire or smoke",
+        "a photo of an area with fire or smoke",
+        "a picture of an area without fire or smoke",
+        "a photo of an area without fire or smoke",
+    ]
+    videos = []
+    data_dir = "TRAINING_SET_DEV_1"
+    postive_video_dir, negative_video_dir = "1", "0"
+    true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
+
+    for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
+        for file in os.scandir(folder_path):
+            if file.path.endswith(".png"):
+                os.remove(file.path)
+        if os.path.basename(folder_path) == postive_video_dir:
+            print("processing positive videos")
+            postive_video_number = len(
+                [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
+            )
+            print(postive_video_number)
+            videos = process_videos(model=model, processor=processor, prompts=prompts, folder_path=folder_path)
+            true_positive = sum(1 for video in videos if video)
+            false_negative = postive_video_number - true_positive
+            # print(videos)
+        if os.path.basename(folder_path) == negative_video_dir:
+            print("processing negative videos")
+            negative_video_number = len(
+                [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
+            )
+            print(negative_video_number)
+            videos = process_videos(model=model, processor=processor, prompts=prompts, folder_path=folder_path)
+            true_negative = sum(1 for video in videos if not video)
+            false_positive = negative_video_number - true_negative
+            # print(videos)
+
+    recall = true_positive / (true_positive + false_negative)
+    precision = true_positive / (true_positive + false_positive)
+    specificity = true_negative / (true_negative + false_positive)
+    accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
+
+    print("accuracy: ", accuracy)
+    print("precision: ", precision)
+    print("specificity: ", specificity)
+    print("recall: ", recall)
