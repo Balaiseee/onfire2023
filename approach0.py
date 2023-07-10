@@ -1,16 +1,19 @@
 # Approach : 0
 # Use zero-shot image classification model (CLIP) to predict whether there is fire or smoke in a video
-#   Step 1 : Sample the video into frames with a fixed sample interval
+#   Step 1 : Sample the video into frames with a fixed sample interval (may vary across videos)
 #   Step 2 : Apply model prediction on each frame
 #   Step 3 : Compute the detection by aggregating the prediction in a timeline
 #   Step 4 : Classify the video based on the percentage of detection time over the total video time
+#   Step 5 : Maximize the overall performance of this approach by varying the detection threshold
 
 import os
 import collections
+from pprint import pprint
 from functools import reduce
 from itertools import groupby
 
 import cv2
+import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 
@@ -29,6 +32,8 @@ def predicate(a, b):
 
 
 def process_videos(model, processor, prompts, folder_path):
+    videos = []
+
     for movie_file in os.scandir(folder_path):
         if movie_file.path.endswith(".mp4"):
             vidcap = cv2.VideoCapture(movie_file.path)
@@ -76,7 +81,8 @@ def process_videos(model, processor, prompts, folder_path):
 
             detection_time = reduce(predicate, [*results, 0])
             detection_time_relative_to_total_duration = (detection_time / total_duration) * 100
-            videos.append(detection_time_relative_to_total_duration > 3)
+
+            videos.append(detection_time_relative_to_total_duration)
 
             for file in os.scandir(folder_path):
                 if file.path.endswith(".png"):
@@ -94,42 +100,71 @@ if __name__ == "__main__":
         "a picture of an area without fire or smoke",
         "a photo of an area without fire or smoke",
     ]
-    videos = []
-    data_dir = "TRAINING_SET_DEV_1"
-    postive_video_dir, negative_video_dir = "1", "0"
+    data_dir = "TEST_SET_DEV"
+    positive_video_dir, negative_video_dir = "1", "0"
+    positive_video_scores, negative_video_scores = [], []
+    positive_video_number, negative_video_number = 0, 0
     true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
+    detection_threshold_range = list(map(float, np.arange(start=1, stop=31, step=0.01)))
+    performances = {}
 
     for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
         for file in os.scandir(folder_path):
             if file.path.endswith(".png"):
                 os.remove(file.path)
-        if os.path.basename(folder_path) == postive_video_dir:
-            print("processing positive videos")
-            postive_video_number = len(
+
+        if os.path.basename(folder_path) == positive_video_dir:
+            positive_video_number = len(
                 [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
             )
-            print(postive_video_number)
-            videos = process_videos(model=model, processor=processor, prompts=prompts, folder_path=folder_path)
-            true_positive = sum(1 for video in videos if video)
-            false_negative = postive_video_number - true_positive
-            # print(videos)
+            positive_video_scores = process_videos(
+                model=model,
+                processor=processor,
+                prompts=prompts,
+                folder_path=folder_path,
+            )
+
         if os.path.basename(folder_path) == negative_video_dir:
-            print("processing negative videos")
             negative_video_number = len(
                 [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
             )
-            print(negative_video_number)
-            videos = process_videos(model=model, processor=processor, prompts=prompts, folder_path=folder_path)
-            true_negative = sum(1 for video in videos if not video)
-            false_positive = negative_video_number - true_negative
-            # print(videos)
+            negative_video_scores = process_videos(
+                model=model,
+                processor=processor,
+                prompts=prompts,
+                folder_path=folder_path,
+            )
 
-    recall = true_positive / (true_positive + false_negative)
-    precision = true_positive / (true_positive + false_positive)
-    specificity = true_negative / (true_negative + false_positive)
-    accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
+    for detection_threshold in detection_threshold_range:
+        negative_videos_detected = [
+            detection_time_relative_to_total_duration > detection_threshold
+            for detection_time_relative_to_total_duration in negative_video_scores
+        ]
+        positive_videos_detected = [
+            detection_time_relative_to_total_duration > detection_threshold
+            for detection_time_relative_to_total_duration in positive_video_scores
+        ]
 
-    print("accuracy: ", accuracy)
-    print("precision: ", precision)
-    print("specificity: ", specificity)
-    print("recall: ", recall)
+        true_positive = sum(1 for positive_video in positive_videos_detected if positive_video)
+        false_negative = positive_video_number - true_positive
+        true_negative = sum(1 for negative_video in negative_videos_detected if not negative_video)
+        false_positive = negative_video_number - true_negative
+
+        recall = true_positive / (true_positive + false_negative)
+        precision = true_positive / (true_positive + false_positive)
+        specificity = true_negative / (true_negative + false_positive)
+        accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
+
+        performances.update(
+            {
+                detection_threshold: {
+                    "accuracy": accuracy,
+                    "precision": precision,
+                    "specificity": specificity,
+                    "recall": recall,
+                    "score": accuracy + precision + specificity + recall,
+                }
+            }
+        )
+
+    pprint(sorted(performances.items(), key=lambda item: item[1]["score"]))
