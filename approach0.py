@@ -9,6 +9,7 @@
 import os
 import collections
 from pprint import pprint
+from hashlib import sha512
 from functools import reduce
 from itertools import groupby
 
@@ -62,9 +63,7 @@ def process_videos(model, processor, prompts, folder_path):
                     outputs = model(**inputs)
                     logits_per_image = outputs.logits_per_image
                     probs = list(map(float, list(logits_per_image.softmax(dim=1)[0])))
-                    # print(probs)
                     images.update({frame: bool(sum(probs[:2]) >= 0.5)})
-                    # images.update({frame: bool(probs.index(max(probs)) <= 1)})
                     indexes.append(frame)
 
             images, results = collections.OrderedDict(sorted(images.items())), []
@@ -105,7 +104,7 @@ if __name__ == "__main__":
     positive_video_scores, negative_video_scores = [], []
     positive_video_number, negative_video_number = 0, 0
     true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
-    detection_threshold_range = list(map(float, np.arange(start=1, stop=31, step=0.01)))
+    detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
     performances = {}
 
     for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
@@ -114,26 +113,56 @@ if __name__ == "__main__":
                 os.remove(file.path)
 
         if os.path.basename(folder_path) == positive_video_dir:
+            positive_video_score_test_set_hash = sha512(
+                "".join(
+                    sorted(
+                        os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4")
+                    )
+                ).encode()
+            ).hexdigest()
+            positive_video_score_file = f"{positive_video_score_test_set_hash}.positive.md"
             positive_video_number = len(
                 [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
             )
-            positive_video_scores = process_videos(
-                model=model,
-                processor=processor,
-                prompts=prompts,
-                folder_path=folder_path,
-            )
+
+            if not os.path.exists(os.path.join(os.getcwd(), positive_video_score_file)):
+                positive_video_scores = process_videos(
+                    model=model,
+                    processor=processor,
+                    prompts=prompts,
+                    folder_path=folder_path,
+                )
+                with open(positive_video_score_file, "w+") as file:
+                    file.write(("\n".join(str(positive_video_score) for positive_video_score in positive_video_scores)))
+            else:
+                with open(positive_video_score_file, "r") as file:
+                    positive_video_scores = list(map(float, file.readlines()))
 
         if os.path.basename(folder_path) == negative_video_dir:
+            negative_video_score_test_set_hash = sha512(
+                "".join(
+                    sorted(
+                        os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4")
+                    )
+                ).encode()
+            ).hexdigest()
+            negative_video_score_file = f"{negative_video_score_test_set_hash}.negative.md"
             negative_video_number = len(
                 [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
             )
-            negative_video_scores = process_videos(
-                model=model,
-                processor=processor,
-                prompts=prompts,
-                folder_path=folder_path,
-            )
+
+            if not os.path.exists(os.path.join(os.getcwd(), negative_video_score_file)):
+                negative_video_scores = process_videos(
+                    model=model,
+                    processor=processor,
+                    prompts=prompts,
+                    folder_path=folder_path,
+                )
+                with open(negative_video_score_file, "w+") as file:
+                    file.write(("\n".join(str(negative_video_score) for negative_video_score in negative_video_scores)))
+            else:
+                with open(negative_video_score_file, "r") as file:
+                    negative_video_scores = list(map(float, file.readlines()))
 
     for detection_threshold in detection_threshold_range:
         negative_videos_detected = [
