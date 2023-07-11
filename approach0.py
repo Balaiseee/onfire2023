@@ -32,7 +32,7 @@ def predicate(a, b):
     return a[1] - a[0] + b[1] - b[0]
 
 
-def process_videos(model, processor, prompts, folder_path):
+def process_videos(model, processor, prompts, frame_detection_threshold, folder_path):
     videos = []
 
     for movie_file in os.scandir(folder_path):
@@ -55,26 +55,26 @@ def process_videos(model, processor, prompts, folder_path):
 
             images, indexes = {}, []
 
-            for file in os.scandir(folder_path):
-                if file.path.endswith(".png"):
-                    frame = int(file.name.split(".")[1])
-                    image = Image.open(file.path)
+            for image_file in os.scandir(folder_path):
+                if image_file.path.endswith(".png"):
+                    frame = int(image_file.name.split(".")[1])
+                    image = Image.open(image_file.path)
                     inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to("cuda")
                     outputs = model(**inputs)
                     logits_per_image = outputs.logits_per_image
                     probs = list(map(float, list(logits_per_image.softmax(dim=1)[0])))
-                    images.update({frame: bool(sum(probs[:2]) >= 0.5)})
+                    images.update({frame: bool(sum(probs[:2]) >= frame_detection_threshold)})
                     indexes.append(frame)
 
             images, results = collections.OrderedDict(sorted(images.items())), []
 
-            for k, g in groupby(iterable=enumerate(images.values()), key=lambda x: x[1]):
-                if k:
-                    g = list(g)
+            for detected, group in groupby(iterable=enumerate(images.values()), key=lambda x: x[1]):
+                if detected:
+                    group = list(group)
                     results.append(
                         [
-                            int(g[0][0]) * adjusted_sampling_interval,
-                            int(g[0][0] + len(g)) * adjusted_sampling_interval,
+                            int(group[0][0]) * adjusted_sampling_interval,
+                            int(group[0][0] + len(group)) * adjusted_sampling_interval,
                         ]
                     )
 
@@ -83,9 +83,9 @@ def process_videos(model, processor, prompts, folder_path):
 
             videos.append(detection_time_relative_to_total_duration)
 
-            for file in os.scandir(folder_path):
-                if file.path.endswith(".png"):
-                    os.remove(file.path)
+            for image_file in os.scandir(folder_path):
+                if image_file.path.endswith(".png"):
+                    os.remove(image_file.path)
 
     return videos
 
@@ -104,13 +104,14 @@ if __name__ == "__main__":
     positive_video_scores, negative_video_scores = [], []
     positive_video_number, negative_video_number = 0, 0
     true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
-    detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
+    frame_detection_threshold = 0.5
+    video_detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
     performances = {}
 
     for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
-        for file in os.scandir(folder_path):
-            if file.path.endswith(".png"):
-                os.remove(file.path)
+        for image_file in os.scandir(folder_path):
+            if image_file.path.endswith(".png"):
+                os.remove(image_file.path)
 
         if os.path.basename(folder_path) == positive_video_dir:
             positive_video_score_test_set_hash = sha512(
@@ -130,6 +131,7 @@ if __name__ == "__main__":
                     model=model,
                     processor=processor,
                     prompts=prompts,
+                    frame_detection_threshold=frame_detection_threshold,
                     folder_path=folder_path,
                 )
                 with open(positive_video_score_file, "w+") as file:
@@ -156,6 +158,7 @@ if __name__ == "__main__":
                     model=model,
                     processor=processor,
                     prompts=prompts,
+                    frame_detection_threshold=frame_detection_threshold,
                     folder_path=folder_path,
                 )
                 with open(negative_video_score_file, "w+") as file:
@@ -164,13 +167,13 @@ if __name__ == "__main__":
                 with open(negative_video_score_file, "r") as file:
                     negative_video_scores = list(map(float, file.readlines()))
 
-    for detection_threshold in detection_threshold_range:
+    for video_detection_threshold in video_detection_threshold_range:
         negative_videos_detected = [
-            detection_time_relative_to_total_duration > detection_threshold
+            detection_time_relative_to_total_duration > video_detection_threshold
             for detection_time_relative_to_total_duration in negative_video_scores
         ]
         positive_videos_detected = [
-            detection_time_relative_to_total_duration > detection_threshold
+            detection_time_relative_to_total_duration > video_detection_threshold
             for detection_time_relative_to_total_duration in positive_video_scores
         ]
 
@@ -186,7 +189,7 @@ if __name__ == "__main__":
 
         performances.update(
             {
-                detection_threshold: {
+                video_detection_threshold: {
                     "accuracy": accuracy,
                     "precision": precision,
                     "specificity": specificity,
