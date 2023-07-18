@@ -7,16 +7,17 @@
 #   Step 5 : Maximize the overall performance of this approach by varying the detection threshold
 
 import os
-import collections
-from pprint import pprint
+import json
 from hashlib import sha512
-from functools import reduce
-from itertools import groupby
 
 import cv2
+import torch
+import open_clip
 import numpy as np
 from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
+from sklearn.metrics import classification_report
+
+from utils import slugify
 
 
 SAMPLING_INTERVAL = 5  # seconds
@@ -32,7 +33,7 @@ def predicate(a, b):
     return a[1] - a[0] + b[1] - b[0]
 
 
-def process_videos(model, processor, prompts, frame_detection_threshold, folder_path):
+def process_videos(model, prompts, frame_detection_threshold, folder_path):
     videos = []
 
     for movie_file in os.scandir(folder_path):
@@ -53,34 +54,23 @@ def process_videos(model, processor, prompts, frame_detection_threshold, folder_
                         cv2.imwrite(f"""{movie_file.path[:-4]}.{count}.png""", image)
                 count += 1
 
-            images, indexes = {}, []
+            frames = []
 
             for image_file in os.scandir(folder_path):
                 if image_file.path.endswith(".png"):
-                    frame = int(image_file.name.split(".")[1])
-                    image = Image.open(image_file.path)
-                    inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to("cuda")
-                    outputs = model(**inputs)
-                    logits_per_image = outputs.logits_per_image
-                    probs = list(map(float, list(logits_per_image.softmax(dim=1)[0])))
-                    images.update({frame: bool(sum(probs[:2]) >= frame_detection_threshold)})
-                    indexes.append(frame)
+                    image = preprocess(Image.open(image_file.path)).cuda().unsqueeze(0)
 
-            images, results = collections.OrderedDict(sorted(images.items())), []
+                    with torch.no_grad():
+                        image_features = model.encode_image(image)
+                        text_features = model.encode_text(prompts)
+                        image_features /= image_features.norm(dim=-1, keepdim=True)
+                        text_features /= text_features.norm(dim=-1, keepdim=True)
 
-            for detected, group in groupby(iterable=enumerate(images.values()), key=lambda x: x[1]):
-                if detected:
-                    group = list(group)
-                    results.append(
-                        [
-                            int(group[0][0]) * adjusted_sampling_interval,
-                            int(group[0][0] + len(group)) * adjusted_sampling_interval,
-                        ]
-                    )
+                    probs = (100.0 * image_features @ text_features.T).softmax(dim=-1)[0].tolist()
+                    frames.append(bool(sum(probs[:2]) >= frame_detection_threshold))
 
-            detection_time = reduce(predicate, [*results, 0])
+            detection_time = min(sum(1 for frame in frames if frame) * adjusted_sampling_interval, total_duration)
             detection_time_relative_to_total_duration = (detection_time / total_duration) * 100
-
             videos.append(detection_time_relative_to_total_duration)
 
             for image_file in os.scandir(folder_path):
@@ -91,112 +81,79 @@ def process_videos(model, processor, prompts, frame_detection_threshold, folder_
 
 
 if __name__ == "__main__":
-    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to("cuda")
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    prompts = [
-        "a picture of an area with fire or smoke",
-        "a photo of an area with fire or smoke",
-        "a picture of an area without fire or smoke",
-        "a photo of an area without fire or smoke",
-    ]
-    data_dir = "TEST_SET_DEV"
-    positive_video_dir, negative_video_dir = "1", "0"
-    positive_video_scores, negative_video_scores = [], []
-    positive_video_number, negative_video_number = 0, 0
-    true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
-    frame_detection_threshold = 0.5
-    video_detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
-    performances = {}
+    for model_name, pretrained in open_clip.list_pretrained():
+        model, _, preprocess = open_clip.create_model_and_transforms(model_name=model_name, pretrained=pretrained)
+        model = model.cuda()
 
-    for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
-        for image_file in os.scandir(folder_path):
-            if image_file.path.endswith(".png"):
-                os.remove(image_file.path)
+        tokenizer = open_clip.get_tokenizer(model_name=model_name)
+        prompts = tokenizer(
+            [
+                "a picture of an area with fire or smoke",
+                "a photo of an area with fire or smoke",
+                "a picture of an area without fire or smoke",
+                "a photo of an area without fire or smoke",
+            ]
+        ).cuda()
 
-        if os.path.basename(folder_path) == positive_video_dir:
-            positive_video_score_test_set_hash = sha512(
-                "".join(
-                    sorted(
-                        os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4")
+        data_dir = "VAL_SET_DEV"
+        positive_video_dir, negative_video_dir = "1", "0"
+        positive_video_scores, negative_video_scores = [], []
+        positive_video_number, negative_video_number = 0, 0
+        true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
+        frame_detection_threshold = 0.5
+        video_detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
+        performances = {}
+
+        for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
+            for image_file in os.scandir(folder_path):
+                if image_file.path.endswith(".png"):
+                    os.remove(image_file.path)
+
+            if os.path.basename(folder_path) == positive_video_dir:
+                positive_video_score_validation_set_hash = sha512("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest()
+                positive_video_score_file = f"{positive_video_score_validation_set_hash}.{slugify(model_name)}.{slugify(pretrained)}.positive.md"
+                positive_video_number = len([movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")])
+
+                if not os.path.exists(os.path.join(os.getcwd(), positive_video_score_file)):
+                    positive_video_scores = process_videos(
+                        model=model,
+                        prompts=prompts,
+                        frame_detection_threshold=frame_detection_threshold,
+                        folder_path=folder_path,
                     )
-                ).encode()
-            ).hexdigest()
-            positive_video_score_file = f"{positive_video_score_test_set_hash}.positive.md"
-            positive_video_number = len(
-                [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
-            )
+                    with open(positive_video_score_file, "w+") as file:
+                        file.write(("\n".join(str(positive_video_score) for positive_video_score in positive_video_scores)))
+                else:
+                    with open(positive_video_score_file, "r") as file:
+                        positive_video_scores = list(map(float, file.readlines()))
 
-            if not os.path.exists(os.path.join(os.getcwd(), positive_video_score_file)):
-                positive_video_scores = process_videos(
-                    model=model,
-                    processor=processor,
-                    prompts=prompts,
-                    frame_detection_threshold=frame_detection_threshold,
-                    folder_path=folder_path,
-                )
-                with open(positive_video_score_file, "w+") as file:
-                    file.write(("\n".join(str(positive_video_score) for positive_video_score in positive_video_scores)))
-            else:
-                with open(positive_video_score_file, "r") as file:
-                    positive_video_scores = list(map(float, file.readlines()))
+            if os.path.basename(folder_path) == negative_video_dir:
+                negative_video_score_validation_set_hash = sha512("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest()
+                negative_video_score_file = f"{negative_video_score_validation_set_hash}.{slugify(model_name)}.{slugify(pretrained)}.negative.md"
+                negative_video_number = len([movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")])
 
-        if os.path.basename(folder_path) == negative_video_dir:
-            negative_video_score_test_set_hash = sha512(
-                "".join(
-                    sorted(
-                        os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4")
+                if not os.path.exists(os.path.join(os.getcwd(), negative_video_score_file)):
+                    negative_video_scores = process_videos(
+                        model=model,
+                        prompts=prompts,
+                        frame_detection_threshold=frame_detection_threshold,
+                        folder_path=folder_path,
                     )
-                ).encode()
-            ).hexdigest()
-            negative_video_score_file = f"{negative_video_score_test_set_hash}.negative.md"
-            negative_video_number = len(
-                [movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")]
-            )
+                    with open(negative_video_score_file, "w+") as file:
+                        file.write(("\n".join(str(negative_video_score) for negative_video_score in negative_video_scores)))
+                else:
+                    with open(negative_video_score_file, "r") as file:
+                        negative_video_scores = list(map(float, file.readlines()))
 
-            if not os.path.exists(os.path.join(os.getcwd(), negative_video_score_file)):
-                negative_video_scores = process_videos(
-                    model=model,
-                    processor=processor,
-                    prompts=prompts,
-                    frame_detection_threshold=frame_detection_threshold,
-                    folder_path=folder_path,
-                )
-                with open(negative_video_score_file, "w+") as file:
-                    file.write(("\n".join(str(negative_video_score) for negative_video_score in negative_video_scores)))
-            else:
-                with open(negative_video_score_file, "r") as file:
-                    negative_video_scores = list(map(float, file.readlines()))
+        for video_detection_threshold in video_detection_threshold_range:
+            negative_videos_detected = [detection_time_relative_to_total_duration > video_detection_threshold for detection_time_relative_to_total_duration in negative_video_scores]
+            positive_videos_detected = [detection_time_relative_to_total_duration > video_detection_threshold for detection_time_relative_to_total_duration in positive_video_scores]
+            y_true = negative_video_number * [0] + positive_video_number * [1]
+            y_pred = list(map(int, negative_videos_detected + positive_videos_detected))
 
-    for video_detection_threshold in video_detection_threshold_range:
-        negative_videos_detected = [
-            detection_time_relative_to_total_duration > video_detection_threshold
-            for detection_time_relative_to_total_duration in negative_video_scores
-        ]
-        positive_videos_detected = [
-            detection_time_relative_to_total_duration > video_detection_threshold
-            for detection_time_relative_to_total_duration in positive_video_scores
-        ]
+            performances.update({video_detection_threshold: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True)["macro avg"]})
 
-        true_positive = sum(1 for positive_video in positive_videos_detected if positive_video)
-        false_negative = positive_video_number - true_positive
-        true_negative = sum(1 for negative_video in negative_videos_detected if not negative_video)
-        false_positive = negative_video_number - true_negative
+        output_data = {detection_threshold: classification_metrics for detection_threshold, classification_metrics in sorted(performances.items(), key=lambda item: item[1]["f1-score"])[-50:]}
 
-        recall = true_positive / (true_positive + false_negative)
-        precision = true_positive / (true_positive + false_positive)
-        specificity = true_negative / (true_negative + false_positive)
-        accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
-
-        performances.update(
-            {
-                video_detection_threshold: {
-                    "accuracy": accuracy,
-                    "precision": precision,
-                    "specificity": specificity,
-                    "recall": recall,
-                    "score": accuracy + precision + specificity + recall,
-                }
-            }
-        )
-
-    pprint(sorted(performances.items(), key=lambda item: item[1]["score"]))
+        with open(f"""output.{slugify(model_name)}.{slugify(pretrained)}.json""", "w", encoding="utf-8") as output_file:
+            json.dump(output_data, output_file, ensure_ascii=False, indent=4)
