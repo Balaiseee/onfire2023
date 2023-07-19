@@ -1,9 +1,13 @@
 import os
+import re
 from typing import Union, Dict, List
 
 import cv2
 from pprint import pprint
 from striprtf.striprtf import rtf_to_text
+
+
+PATTERN = re.compile(r"[\W_]+")
 
 
 def sample(
@@ -65,6 +69,10 @@ def annotate(annotation_path: str) -> Dict[str, Dict[str, Union[int, List[int]]]
                         }
                     )
     return json_output
+
+
+def slugify(string):
+    return PATTERN.sub("-", string.encode("ascii", errors="replace").decode()).strip("-")
 
 
 if __name__ == "__main__":

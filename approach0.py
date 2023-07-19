@@ -8,7 +8,7 @@
 
 import os
 import json
-from hashlib import sha512
+from hashlib import shake_256
 
 import cv2
 import torch
@@ -23,17 +23,7 @@ from utils import slugify
 SAMPLING_INTERVAL = 5  # seconds
 
 
-def predicate(a, b):
-    if isinstance(a, int | float):
-        if isinstance(b, int | float):
-            return a + b
-        return a + b[1] - b[0]
-    if isinstance(b, int | float):
-        return a[1] - a[0] + b
-    return a[1] - a[0] + b[1] - b[0]
-
-
-def process_videos(model, prompts, frame_detection_threshold, folder_path):
+def process_videos(model, preprocess, prompts, frame_detection_threshold, folder_path):
     videos = []
 
     for movie_file in os.scandir(folder_path):
@@ -101,7 +91,7 @@ if __name__ == "__main__":
         positive_video_number, negative_video_number = 0, 0
         true_positive, false_negative, true_negative, false_positive = 0, 0, 0, 0
         frame_detection_threshold = 0.5
-        video_detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=30, step=0.01), decimals=2)))
+        video_detection_threshold_range = list(map(float, np.around(np.arange(start=0, stop=100, step=0.1), decimals=1)))
         performances = {}
 
         for folder_path in [f.path for f in os.scandir(data_dir) if f.is_dir()]:
@@ -110,13 +100,14 @@ if __name__ == "__main__":
                     os.remove(image_file.path)
 
             if os.path.basename(folder_path) == positive_video_dir:
-                positive_video_score_validation_set_hash = sha512("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest()
-                positive_video_score_file = f"{positive_video_score_validation_set_hash}.{slugify(model_name)}.{slugify(pretrained)}.positive.md"
+                positive_validation_set_hash = shake_256("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest(5)
+                positive_video_score_file = f"{slugify(model_name)}.{slugify(pretrained)}.{positive_validation_set_hash}.positive.md"
                 positive_video_number = len([movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")])
 
-                if not os.path.exists(os.path.join(os.getcwd(), positive_video_score_file)):
+                if not os.path.exists(positive_video_score_file):
                     positive_video_scores = process_videos(
                         model=model,
+                        preprocess=preprocess,
                         prompts=prompts,
                         frame_detection_threshold=frame_detection_threshold,
                         folder_path=folder_path,
@@ -128,14 +119,15 @@ if __name__ == "__main__":
                         positive_video_scores = list(map(float, file.readlines()))
 
             if os.path.basename(folder_path) == negative_video_dir:
-                negative_video_score_validation_set_hash = sha512("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest()
-                negative_video_score_file = f"{negative_video_score_validation_set_hash}.{slugify(model_name)}.{slugify(pretrained)}.negative.md"
+                negative_validation_set_hash = shake_256("".join(sorted(os.path.basename(file.path) for file in os.scandir(folder_path) if file.path.endswith(".mp4"))).encode()).hexdigest(5)
+                negative_video_score_file = f"{slugify(model_name)}.{slugify(pretrained)}.{negative_validation_set_hash}.negative.md"
                 negative_video_number = len([movie_file for movie_file in os.scandir(folder_path) if movie_file.path.endswith(".mp4")])
 
-                if not os.path.exists(os.path.join(os.getcwd(), negative_video_score_file)):
+                if not os.path.exists(negative_video_score_file):
                     negative_video_scores = process_videos(
                         model=model,
                         prompts=prompts,
+                        preprocess=preprocess,
                         frame_detection_threshold=frame_detection_threshold,
                         folder_path=folder_path,
                     )
@@ -151,9 +143,8 @@ if __name__ == "__main__":
             y_true = negative_video_number * [0] + positive_video_number * [1]
             y_pred = list(map(int, negative_videos_detected + positive_videos_detected))
 
-            performances.update({video_detection_threshold: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True)["macro avg"]})
+            performances.update({video_detection_threshold: classification_report(y_true=y_true, y_pred=y_pred, output_dict=True, zero_division=0)["macro avg"]})
 
         output_data = {detection_threshold: classification_metrics for detection_threshold, classification_metrics in sorted(performances.items(), key=lambda item: item[1]["f1-score"])[-50:]}
-
-        with open(f"""output.{slugify(model_name)}.{slugify(pretrained)}.json""", "w", encoding="utf-8") as output_file:
+        with open(f"""output.{slugify(model_name)}.{slugify(pretrained)}.{positive_validation_set_hash}.{negative_validation_set_hash}.json""", "w", encoding="utf-8") as output_file:
             json.dump(output_data, output_file, ensure_ascii=False, indent=4)
